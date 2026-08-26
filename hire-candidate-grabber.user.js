@@ -1388,9 +1388,10 @@ ${JSON.stringify(data, null, 2)}
       container.style.left = r.left + 'px';
       container.style.top = r.top + 'px';
       startX = e.clientX; startY = e.clientY; moved = false;
-      drag = { pointerId: e.pointerId, ox: e.clientX - r.left, oy: e.clientY - r.top };
-      container.setPointerCapture?.(e.pointerId);
-      // 注意：此处不能 preventDefault，否则按钮的 click 事件会被阻止
+      drag = { pointerId: e.pointerId, ox: e.clientX - r.left, oy: e.clientY - r.top, captured: false };
+      // 注意：此处不能调用 setPointerCapture，也不能 preventDefault，
+      // 否则 pointerup 会被重定向到容器，导致按钮的 click 事件不触发。
+      // 指针捕获延迟到确认拖拽（移动超过 5px）后再进行。
     }, true);
 
     container.addEventListener('pointermove', e => {
@@ -1399,6 +1400,12 @@ ${JSON.stringify(data, null, 2)}
       if (!moved && Math.hypot(e.clientX - startX, e.clientY - startY) > 5) {
         moved = true;
         container.dataset.dragging = 'true';
+        // 确认拖拽后再捕获指针，保证拖拽过程中即使鼠标移出容器也能继续接收事件；
+        // 此时已不需要 click 事件，不会影响按钮点击
+        if (!drag.captured) {
+          container.setPointerCapture?.(drag.pointerId);
+          drag.captured = true;
+        }
       }
       if (!moved) return;
       e.preventDefault(); // 拖拽中阻止文本选择等默认行为
@@ -1411,7 +1418,7 @@ ${JSON.stringify(data, null, 2)}
 
     const stop = e => {
       if (!drag || e.pointerId !== drag.pointerId) return;
-      container.releasePointerCapture?.(e.pointerId);
+      if (drag.captured) container.releasePointerCapture?.(e.pointerId);
       container.dataset.dragging = 'false';
       if (moved) {
         const r = container.getBoundingClientRect();
