@@ -86,13 +86,19 @@
 
   // 合并用户配置（localStorage 中的旧配置覆盖默认值，但新增的默认字段会保留）
   let CONFIG = { ...DEFAULT_CONFIG, ...Storage.get('config', {}) };
-  // 防御性校验：旧版本配置或手动篡改 localStorage 可能产生非法值（如并发数 0），统一 clamp 到安全范围
-  CONFIG.CONTACT_CONCURRENCY = Math.min(10, Math.max(1, Number(CONFIG.CONTACT_CONCURRENCY) || 6));
-  CONFIG.CONTACT_GAP_MS = Math.max(0, Number(CONFIG.CONTACT_GAP_MS) || 120);
-  CONFIG.SCROLL_STEP = Math.max(100, Number(CONFIG.SCROLL_STEP) || 600);
-  CONFIG.SCROLL_WAIT_MS = Math.max(100, Number(CONFIG.SCROLL_WAIT_MS) || 350);
+  // 防御性校验：旧版本配置或手动篡改 localStorage 可能产生非法值（如并发数 0、字符串），统一 clamp 到安全范围
+  // 注意：用 Number.isFinite 而非 ||，因为 0 是合法值（如请求间隔设为 0），|| 会误把 0 替换为默认值
+  function clampConfigNum(v, def, min, max = Infinity) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+  }
+  CONFIG.CONTACT_CONCURRENCY = clampConfigNum(CONFIG.CONTACT_CONCURRENCY, 6, 1, 10);
+  CONFIG.CONTACT_GAP_MS = clampConfigNum(CONFIG.CONTACT_GAP_MS, 120, 0);
+  CONFIG.SCROLL_STEP = clampConfigNum(CONFIG.SCROLL_STEP, 600, 100);
+  CONFIG.SCROLL_WAIT_MS = clampConfigNum(CONFIG.SCROLL_WAIT_MS, 350, 100);
   if (!['talent', 'application'].includes(CONFIG.UNIQUE_MODE)) CONFIG.UNIQUE_MODE = 'talent';
 
+  // 持久化当前配置到 localStorage
   function saveConfig() { Storage.set('config', CONFIG); }
 
   // ============ 常量 ============
@@ -177,10 +183,12 @@
     return hasTag ? 'contact' : '';
   }
 
+  // 判断是否为姓名列（姓名列固定输出，不需要在勾选列表中重复出现）
   function isNameHeader(name) {
     return ['姓名', '候选人姓名', '候选人', '人才姓名', 'name'].includes(normHeader(name));
   }
 
+  // 判断是否为评估结论列（评估列需调用接口补全，不直接取 DOM 文本）
   function isEvaluationHeader(name) {
     const n = normHeader(name);
     if (!n) return false;
@@ -397,6 +405,7 @@
     return vals.join('；');
   }
 
+  // 从 document.cookie 中读取指定名称的 cookie 值（用于获取 CSRF token）
   function getCookie(name) {
     const prefix = name + '=';
     const item = document.cookie.split(';').map(s => s.trim()).find(s => s.startsWith(prefix));
@@ -746,15 +755,6 @@
       background: 'rgba(51,112,255,0.08)',
       cursor: 'grab', userSelect: 'none', fontFamily: 'sans-serif'
     });
-    // 恢复上次拖拽位置，同时 clamp 到当前视口范围内（防止窗口缩小后按钮跑出屏幕）
-    const pos = CONFIG.FAB_POS;
-    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
-      container.style.left = Math.min(Math.max(0, pos.left), window.innerWidth - 60) + 'px';
-      container.style.top = Math.min(Math.max(0, pos.top), window.innerHeight - 60) + 'px';
-    } else {
-      container.style.right = '24px';
-      container.style.bottom = '80px';
-    }
 
     const fab = el('button', { id: IDS.fab, text: '📋 采集候选人' }, {
       background: '#3370ff', color: '#fff', border: 'none', borderRadius: '24px',
@@ -771,6 +771,19 @@
     gear.addEventListener('click', () => showSettings());
     container.append(fab, gear);
     document.body.appendChild(container);
+
+    // 恢复上次拖拽位置，需在 appendChild 后用容器实际尺寸 clamp，防止窗口缩小后按钮跑出屏幕
+    const pos = CONFIG.FAB_POS;
+    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+      const maxL = Math.max(0, window.innerWidth - container.offsetWidth);
+      const maxT = Math.max(0, window.innerHeight - container.offsetHeight);
+      container.style.left = Math.min(Math.max(0, pos.left), maxL) + 'px';
+      container.style.top = Math.min(Math.max(0, pos.top), maxT) + 'px';
+    } else {
+      container.style.right = '24px';
+      container.style.bottom = '80px';
+    }
+
     makeFabDraggable(container);
   }
 
@@ -1190,19 +1203,25 @@
     panel.appendChild(ledgerRow);
 
     // ---- 操作按钮区 ----
-    const actions = el('div', {}, { marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+    // 居中分散布局：按钮大小固定不缩放，间距一致；容器变窄时自动换行，每行始终居中
+    const actions = el('div', {}, {
+      marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '8px',
+      justifyContent: 'center', alignItems: 'center'
+    });
     const mkBtn = (text, bg, color = '#fff') => el('button', { text }, {
-      background: bg, color, border: 'none', borderRadius: '4px', padding: '6px 14px', cursor: 'pointer', fontSize: '13px'
+      background: bg, color, border: 'none', borderRadius: '4px', padding: '6px 14px',
+      cursor: 'pointer', fontSize: '13px', flex: '0 0 auto', whiteSpace: 'nowrap'
     });
 
     const copyBtn = mkBtn('复制 JSON', '#3370ff');
     const csvBtn = mkBtn('导出 CSV', '#13c2c2');
     const copyEmailBtn = mkBtn('复制邮箱', '#52c41a');
-    copyEmailBtn.title = '复制当前筛选结果中的所有邮箱（每行一个）';
+    copyEmailBtn.title = '复制当前筛选结果中的所有邮箱（分号分隔，去重），可直接粘贴到飞书邮箱密送栏';
     const ledgerBtn = mkBtn('登台账', '#722ed1');
     const retryBtn = mkBtn('重试失败项', '#fa8c16');
     const closeBtn = el('button', { text: '关闭并清空' }, {
-      border: '1px solid #ddd', background: '#fff', borderRadius: '4px', padding: '6px 14px', cursor: 'pointer', fontSize: '13px'
+      border: '1px solid #ddd', background: '#fff', borderRadius: '4px', padding: '6px 14px',
+      cursor: 'pointer', fontSize: '13px', flex: '0 0 auto', whiteSpace: 'nowrap'
     });
 
     actions.append(copyBtn, csvBtn, copyEmailBtn, ledgerBtn, retryBtn, closeBtn);
